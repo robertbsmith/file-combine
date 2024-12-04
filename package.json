@@ -3,6 +3,7 @@
   "displayName": "file-combine",
   "description": "Select and combine files and folders to merge into a single editor window, that can be copied into tools such as ChatGPT",
   "version": "0.0.1",
+  "publisher": "therobertsmith",
   "engines": {
     "vscode": "^1.95.0"
   },
