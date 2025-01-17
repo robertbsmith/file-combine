@@ -2,7 +2,7 @@
   "name": "file-combine",
   "displayName": "file-combine",
   "description": "Select and combine files and folders to merge into a single editor window, that can be copied into tools such as ChatGPT",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "repository": {
     "type": "git",
     "url": "https://github.com/robertbsmith/file-combine"
@@ -30,6 +30,39 @@
           "group": "navigation"
         }
       ]
+    },
+    "configuration": {
+      "title": "File Combine",
+      "properties": {
+        "fileCombine.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "dist/**",
+            "build/**",
+            "node_modules/**",
+            "*.min.js",
+            "*.bundle.js",
+            "tsconfig.tsbuildinfo",
+            ".next/**",
+            "*.svg",
+            "*.jpg",
+            "*.png",
+            "*.ico",
+            ".env*",
+            "*.log",
+            "coverage/**",
+            ".idea/**",
+            ".vscode/**"
+          ],
+          "description": "Patterns to exclude from file combination"
+        }
+      }
     }
   },
   "scripts": {
@@ -60,7 +93,9 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
+    "@types/istextorbinary": "^2.3.4",
     "ignore": "^7.0.3",
+    "istextorbinary": "^9.5.0",
     "minimatch": "^10.0.1"
   }
 }
