@@ -4,6 +4,9 @@ All notable changes to the "file-combine" extension will be documented in this f
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.0.5]
+- Fixed directory handling
+
 ## [0.0.4]
 - Better handling of unwanted files that aren't in git ignore like package-lock.json
 - better support in the output for copying

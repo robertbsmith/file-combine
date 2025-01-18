@@ -421,7 +421,27 @@ async function collectFiles(uri: vscode.Uri, fileUris: vscode.Uri[], summary: Pr
                 fileUris.push(uri);
             }
         } else if (stats.type === vscode.FileType.Directory) {
-            // ... [directory handling remains the same] ...
+            const relativePath = vscode.workspace.asRelativePath(uri);
+            debugLog(`Checking directory: ${relativePath}`);
+            
+            const ignoreMatcher = await getIgnoreMatcher(uri);
+            const isIgnored = ignoreMatcher?.ignores(relativePath);
+            const isExcluded = shouldExcludeFile(relativePath);
+            
+            if (isIgnored) {
+                debugLog(`Directory ${relativePath} is ignored by .gitignore`);
+                summary.ignoredFiles.push(relativePath);
+            } else if (isExcluded) {
+                debugLog(`Directory ${relativePath} is excluded by patterns`);
+                summary.excludedFiles.push(relativePath);
+            } else {
+                debugLog(`Processing directory contents: ${relativePath}`);
+                const dirContent = await vscode.workspace.fs.readDirectory(uri);
+                for (const [name, type] of dirContent) {
+                    const childUri = vscode.Uri.joinPath(uri, name);
+                    await collectFiles(childUri, fileUris, summary);
+                }
+            }
         }
     } catch (error) {
         debugLog('Error in collectFiles:', error);
