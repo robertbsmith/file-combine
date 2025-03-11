@@ -326,6 +326,9 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
         totalSize: 0
     };
     const processedPaths: string[] = [];
+    
+    // Track processed file paths to avoid duplicates
+    const processedFilePaths = new Set<string>();
 
     const progressOptions: vscode.ProgressOptions = {
         location: vscode.ProgressLocation.Notification,
@@ -336,7 +339,7 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
     await vscode.window.withProgress(progressOptions, async (progress, token) => {
         const fileUris: vscode.Uri[] = [];
         for (const uri of uris) {
-            await collectFiles(uri, fileUris, summary);
+            await collectFiles(uri, fileUris, summary, processedFilePaths);
         }
         summary.totalFiles = fileUris.length;
 
@@ -400,7 +403,12 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
     });
 }
 
-async function collectFiles(uri: vscode.Uri, fileUris: vscode.Uri[], summary: ProcessingSummary) {
+async function collectFiles(
+    uri: vscode.Uri, 
+    fileUris: vscode.Uri[], 
+    summary: ProcessingSummary, 
+    processedFilePaths: Set<string>
+) {
     debugLog(`Collecting files from: ${uri.fsPath}`);
     
     try {
@@ -408,6 +416,12 @@ async function collectFiles(uri: vscode.Uri, fileUris: vscode.Uri[], summary: Pr
         if (stats.type === vscode.FileType.File) {
             const relativePath = vscode.workspace.asRelativePath(uri);
             debugLog(`Checking file: ${relativePath}`);
+            
+            // Skip if this file was already processed
+            if (processedFilePaths.has(uri.fsPath)) {
+                debugLog(`Skipping already processed file: ${relativePath}`);
+                return;
+            }
             
             const ignoreMatcher = await getIgnoreMatcher(uri);
             const isIgnored = ignoreMatcher?.ignores(relativePath);
@@ -419,6 +433,8 @@ async function collectFiles(uri: vscode.Uri, fileUris: vscode.Uri[], summary: Pr
                 summary.excludedFiles.push(relativePath);
             } else {
                 fileUris.push(uri);
+                // Mark this file as processed
+                processedFilePaths.add(uri.fsPath);
             }
         } else if (stats.type === vscode.FileType.Directory) {
             const relativePath = vscode.workspace.asRelativePath(uri);
@@ -439,7 +455,7 @@ async function collectFiles(uri: vscode.Uri, fileUris: vscode.Uri[], summary: Pr
                 const dirContent = await vscode.workspace.fs.readDirectory(uri);
                 for (const [name, type] of dirContent) {
                     const childUri = vscode.Uri.joinPath(uri, name);
-                    await collectFiles(childUri, fileUris, summary);
+                    await collectFiles(childUri, fileUris, summary, processedFilePaths);
                 }
             }
         }
