@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import ignore from 'ignore';
+import * as fs from 'fs';
 
-// Debug logger
+// Enhanced Debug logger with timestamps
 function debugLog(message: string, ...args: any[]) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] ${message}`, ...args);
@@ -15,6 +16,7 @@ interface ProcessingSummary {
     excludedFiles: string[];
     binaryFiles: string[];
     totalSize: number;
+    timings: { [key: string]: number }; // Store timings for different stages
 }
 
 const DEFAULT_EXCLUDE_PATTERNS = [
@@ -48,11 +50,6 @@ const DEFAULT_EXCLUDE_PATTERNS = [
     '.vscode/**'
 ];
 
-interface TreeNode {
-    name: string;
-    children: { [key: string]: TreeNode };
-    isFile: boolean;
-}
 
 function formatFileSize(bytes: number): string {
     const units = ['B', 'KB', 'MB', 'GB'];
@@ -65,18 +62,25 @@ function formatFileSize(bytes: number): string {
     return `${size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+interface TreeNode {
+    name: string;
+    children: { [key: string]: TreeNode };
+    isFile: boolean;
+}
+
+
 function createTreeStructure(paths: string[]): TreeNode {
     debugLog('Creating tree structure for paths:', paths);
     const root: TreeNode = { name: 'root', children: {}, isFile: false };
-    
+
     for (const filePath of paths) {
         const parts = filePath.split('/');
         let currentNode = root;
-        
+
         for (let i = 0; i < parts.length; i++) {
             const part = parts[i];
             const isFile = i === parts.length - 1;
-            
+
             if (!currentNode.children[part]) {
                 currentNode.children[part] = {
                     name: part,
@@ -87,19 +91,19 @@ function createTreeStructure(paths: string[]): TreeNode {
             currentNode = currentNode.children[part];
         }
     }
-    
+
     return root;
 }
 
 function generateTreeView(node: TreeNode, prefix: string = '', isLast = true): string {
     let result = '';
-    
+
     if (node.name !== 'root') {
         result += prefix;
         result += isLast ? '└── ' : '├── ';
         result += node.name + '\n';
     }
-    
+
     const childrenKeys = Object.keys(node.children);
     childrenKeys.forEach((key, index) => {
         const child = node.children[key];
@@ -107,20 +111,20 @@ function generateTreeView(node: TreeNode, prefix: string = '', isLast = true): s
         const newPrefix = prefix + (node.name === 'root' ? '' : (isLast ? '    ' : '│   '));
         result += generateTreeView(child, newPrefix, isLastChild);
     });
-    
+
     return result;
 }
 
 function shouldExcludeFile(relativePath: string): boolean {
     const config = vscode.workspace.getConfiguration('fileCombine');
     const excludePatterns = config.get<string[]>('excludePatterns', DEFAULT_EXCLUDE_PATTERNS);
-    
+
     debugLog('Checking exclusion for path:', relativePath);
     debugLog('Using exclude patterns:', excludePatterns);
-    
+
     const customIgnore = ignore().add(excludePatterns);
     const shouldExclude = customIgnore.ignores(relativePath);
-    
+
     debugLog(`File ${relativePath} excluded: ${shouldExclude}`);
     return shouldExclude;
 }
@@ -136,7 +140,7 @@ class CombinedFilesPanel {
             enableScripts: true,
             localResourceRoots: [this._extensionUri]
         };
-        
+
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
     }
 
@@ -182,10 +186,10 @@ class CombinedFilesPanel {
 
     private _getHtmlForWebview(content: string) {
         const plainTextContent = content
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-    
+            .replace(/&/g, '&')
+            .replace(/</g, '<')
+            .replace(/>/g, '>');
+
         return `<!DOCTYPE html>
         <html>
         <head>
@@ -309,7 +313,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
     debugLog('Starting file combination process');
-    
+
     if (!uris || uris.length === 0) {
         debugLog('No files or folders selected');
         vscode.window.showWarningMessage('No files or folders selected.');
@@ -323,10 +327,11 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
         ignoredFiles: [],
         excludedFiles: [],
         binaryFiles: [],
-        totalSize: 0
+        totalSize: 0,
+        timings: {}
     };
     const processedPaths: string[] = [];
-    
+
     // Track processed file paths to avoid duplicates
     const processedFilePaths = new Set<string>();
 
@@ -337,18 +342,25 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
     };
 
     await vscode.window.withProgress(progressOptions, async (progress, token) => {
+        const startTime = Date.now();
+
         const fileUris: vscode.Uri[] = [];
+        summary.timings.collectFiles = 0; // Initialize collectFiles timing
         for (const uri of uris) {
-            await collectFiles(uri, fileUris, summary, processedFilePaths);
+            const collectStartTime = Date.now(); // Start time for this specific collectFiles call
+            await collectFiles(uri, fileUris, summary, processedFilePaths, token, collectStartTime);
+             // No longer adding here; it's done within collectFiles.
         }
         summary.totalFiles = fileUris.length;
+        // collectFiles timing is now correctly calculated within collectFiles
 
+        const processStartTime = Date.now();
         for (const uri of fileUris) {
             if (token.isCancellationRequested) {
                 return;
             }
             progress.report({ message: `Processing ${path.basename(uri.fsPath)}` });
-            
+
             const result = await processFile(uri);
             if (result) {
                 processedPaths.push(result.path);
@@ -357,17 +369,30 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
                 summary.totalSize += result.size;
             }
         }
+        summary.timings.processFiles = Date.now() - processStartTime;
+
 
         if (token.isCancellationRequested) {
             vscode.window.showInformationMessage('File combination cancelled.');
             return;
         }
-            
+
         if (summary.processedFiles === 0) {
             vscode.window.showWarningMessage('No text files found.');
             return;
         }
+        const treeStartTime = Date.now();
 
+        // Add file structure if more than one file
+        let treeView = '';
+        if (processedPaths.length > 1) {
+            const tree = createTreeStructure(processedPaths);
+            treeView = generateTreeView(tree);
+        }
+
+        summary.timings.treeGeneration = Date.now() - treeStartTime;
+        const totalTime = Date.now() - startTime;
+        summary.timings.total = totalTime;
         // Add summary information at the top
         let output = '# Processing Summary\n';
         output += '```\n';
@@ -389,44 +414,88 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
             output += 'Binary files skipped:\n';
             output += summary.binaryFiles.map(f => `  - ${f}`).join('\n') + '\n';
         }
+
+
+        output += 'Timings:\n';
+        for (const [stage, time] of Object.entries(summary.timings)) {
+          output += `  - ${stage}: ${time}ms\n`;
+        }
         output += '```\n\n';
 
-        // Add file structure if more than one file
-        if (processedPaths.length > 1) {
-            const tree = createTreeStructure(processedPaths);
-            const treeView = generateTreeView(tree);
+
+        if (treeView.length > 0){
             output += `# File Structure\n\`\`\`\n${treeView}\`\`\`\n\n`;
         }
 
+
         output += '# Combined Files\n\n' + combinedContent;
         CombinedFilesPanel.createOrShow(extensionUri, output);
+
+         // Log the summary to the console
+         printProcessingSummary(summary);
     });
 }
 
+
+// Function to print the processing summary to the console
+function printProcessingSummary(summary: ProcessingSummary) {
+    console.log('--- Processing Summary ---');
+    console.log(`Total files found: ${summary.totalFiles}`);
+    console.log(`Files processed: ${summary.processedFiles}`);
+    console.log(`Total size: ${formatFileSize(summary.totalSize)}`);
+
+    if (summary.ignoredFiles.length > 0) {
+        console.log('Files ignored by .gitignore:');
+        summary.ignoredFiles.forEach(f => console.log(`  - ${f}`));
+    }
+
+    if (summary.excludedFiles.length > 0) {
+        console.log('Files excluded by patterns:');
+        summary.excludedFiles.forEach(f => console.log(`  - ${f}`));
+    }
+
+    if (summary.binaryFiles.length > 0) {
+        console.log('Binary files skipped:');
+        summary.binaryFiles.forEach(f => console.log(`  - ${f}`));
+    }
+
+    console.log('Timings:');
+    for (const [stage, time] of Object.entries(summary.timings)) {
+        console.log(`  - ${stage}: ${time}ms`);
+    }
+    console.log('--------------------------');
+}
+
 async function collectFiles(
-    uri: vscode.Uri, 
-    fileUris: vscode.Uri[], 
-    summary: ProcessingSummary, 
-    processedFilePaths: Set<string>
+    uri: vscode.Uri,
+    fileUris: vscode.Uri[],
+    summary: ProcessingSummary,
+    processedFilePaths: Set<string>,
+    token: vscode.CancellationToken,
+    collectStartTime: number // Start time for this particular call
 ) {
     debugLog(`Collecting files from: ${uri.fsPath}`);
-    
+
+    if (token.isCancellationRequested) {
+        return;
+    }
+
     try {
         const stats = await vscode.workspace.fs.stat(uri);
         if (stats.type === vscode.FileType.File) {
             const relativePath = vscode.workspace.asRelativePath(uri);
             debugLog(`Checking file: ${relativePath}`);
-            
+
             // Skip if this file was already processed
             if (processedFilePaths.has(uri.fsPath)) {
                 debugLog(`Skipping already processed file: ${relativePath}`);
                 return;
             }
-            
+
             const ignoreMatcher = await getIgnoreMatcher(uri);
             const isIgnored = ignoreMatcher?.ignores(relativePath);
             const isExcluded = shouldExcludeFile(relativePath);
-            
+
             if (isIgnored) {
                 summary.ignoredFiles.push(relativePath);
             } else if (isExcluded) {
@@ -439,11 +508,12 @@ async function collectFiles(
         } else if (stats.type === vscode.FileType.Directory) {
             const relativePath = vscode.workspace.asRelativePath(uri);
             debugLog(`Checking directory: ${relativePath}`);
-            
+
             const ignoreMatcher = await getIgnoreMatcher(uri);
             const isIgnored = ignoreMatcher?.ignores(relativePath);
             const isExcluded = shouldExcludeFile(relativePath);
-            
+            let dirCollectStartTime: number;
+
             if (isIgnored) {
                 debugLog(`Directory ${relativePath} is ignored by .gitignore`);
                 summary.ignoredFiles.push(relativePath);
@@ -455,42 +525,61 @@ async function collectFiles(
                 const dirContent = await vscode.workspace.fs.readDirectory(uri);
                 for (const [name, type] of dirContent) {
                     const childUri = vscode.Uri.joinPath(uri, name);
-                    await collectFiles(childUri, fileUris, summary, processedFilePaths);
+                    dirCollectStartTime = Date.now(); // Start time for each recursive call
+                    await collectFiles(childUri, fileUris, summary, processedFilePaths, token, dirCollectStartTime);
+
                 }
             }
         }
     } catch (error) {
         debugLog('Error in collectFiles:', error);
-        throw error;
+        throw error; // Re-throw the error to be handled by the caller.  Critical for error reporting.
+    } finally {
+      const duration = Date.now() - collectStartTime;
+      summary.timings.collectFiles += duration;
+      debugLog(`collectFiles for ${uri.fsPath} took ${duration}ms`);
     }
 }
 
 async function getIgnoreMatcher(uri: vscode.Uri): Promise<ignore.Ignore | null> {
     debugLog(`Looking for .gitignore starting from: ${uri.fsPath}`);
     let currentUri = uri;
-    
-    while (currentUri) {
-        const gitignoreUri = vscode.Uri.joinPath(currentUri, '.gitignore');
-        try {
-            await vscode.workspace.fs.stat(gitignoreUri);
-            debugLog(`Found .gitignore at: ${gitignoreUri.fsPath}`);
-            
-            const gitignoreContent = await vscode.workspace.fs.readFile(gitignoreUri);
-            const content = gitignoreContent.toString();
-            debugLog('Git ignore patterns:', content);
-            
-            const ignoreInstance = ignore();
-            ignoreInstance.add(content);
-            return ignoreInstance;
-        } catch (error) {
-            debugLog(`No .gitignore found at: ${gitignoreUri.fsPath}`);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+
+    while (currentUri && workspaceRoot) {
+        if (!currentUri.path.startsWith(workspaceRoot.path)) {
+          debugLog(`Reached workspace root without finding .gitignore`);
+          break;
         }
-        
-        if (currentUri.path === vscode.workspace.workspaceFolders?.[0]?.uri.path) {
-            debugLog('Reached workspace root without finding .gitignore');
+        const gitignoreUri = vscode.Uri.joinPath(currentUri, '.gitignore');
+
+        try {
+            const exists = fs.existsSync(gitignoreUri.fsPath);  // Use synchronous check here.
+            if (exists) {
+              debugLog(`Found .gitignore at: ${gitignoreUri.fsPath}`);
+
+              const gitignoreContent = await vscode.workspace.fs.readFile(gitignoreUri);
+              const content = gitignoreContent.toString();
+              debugLog('Git ignore patterns:', content);
+
+              const ignoreInstance = ignore();
+              ignoreInstance.add(content);
+              return ignoreInstance;
+            } else {
+                debugLog(`No .gitignore found at: ${gitignoreUri.fsPath}`);
+            }
+
+        } catch (error) {
+            debugLog(`Error checking for .gitignore at: ${gitignoreUri.fsPath}`, error);
+             // Continue searching in the parent directory even if there was an error reading a specific .gitignore.
+        }
+
+        if (currentUri.path === workspaceRoot.path) {
             break;
         }
+
         currentUri = vscode.Uri.joinPath(currentUri, '..');
+
     }
 
     debugLog('No .gitignore found in path hierarchy');
@@ -503,12 +592,12 @@ async function processFile(uri: vscode.Uri): Promise<{ content: string; path: st
         const contentBytes = await vscode.workspace.fs.readFile(uri);
         const buffer = Buffer.from(contentBytes);
         const fileSize = buffer.length;
-        
+
         const filename = path.basename(uri.fsPath);
         const { isText } = await import('istextorbinary');
         const isTextFile = isText(filename, buffer);
         debugLog(`File ${filename} is${isTextFile ? '' : ' not'} a text file (${formatFileSize(fileSize)})`);
-        
+
         if (!isTextFile) {
             return null;
         }
