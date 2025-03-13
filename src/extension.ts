@@ -185,11 +185,10 @@ class CombinedFilesPanel {
     }
 
     private _getHtmlForWebview(content: string) {
-        const plainTextContent = content
-            .replace(/&/g, '&')
-            .replace(/</g, '<')
-            .replace(/>/g, '>');
-
+        // We will pass the content as a data attribute to the <pre> element
+        // and then set textContent in the webview's JavaScript.
+        const encodedContent = encodeURIComponent(content); // Encode for safe data attribute
+    
         return `<!DOCTYPE html>
         <html>
         <head>
@@ -263,9 +262,31 @@ class CombinedFilesPanel {
             <button class="copy-button" onclick="copyContent()">Copy to Clipboard</button>
             <div class="container">
                 <div class="line-numbers" id="lineNumbers"></div>
-                <pre id="editor">${plainTextContent}</pre>
+                <pre id="editor" data-content="${encodedContent}"></pre> <!- Pass content as data attribute -->
             </div>
             <script>
+                document.addEventListener('DOMContentLoaded', () => {
+                    const editorPre = document.getElementById('editor');
+                    const content = decodeURIComponent(editorPre.dataset.content); // Decode the content
+                    editorPre.textContent = content; // Set textContent - browser handles escaping
+    
+                    // Add line numbers
+                    const lineNumbers = document.getElementById('lineNumbers');
+                    const lines = content.split('\\n'); // Split from the *decoded* content
+                    lines.forEach((_, i) => {
+                        const span = document.createElement('span');
+                        span.className = 'line-number';
+                        span.textContent = (i + 1).toString();
+                        lineNumbers.appendChild(span);
+                    });
+    
+                    // Synchronize scrolling between line numbers and content
+                    editorPre.addEventListener('scroll', () => {
+                        lineNumbers.scrollTop = editorPre.scrollTop;
+                    });
+                });
+    
+    
                 function copyContent() {
                     const content = document.getElementById('editor').textContent;
                     navigator.clipboard.writeText(content).then(() => {
@@ -276,22 +297,6 @@ class CombinedFilesPanel {
                         }, 2000);
                     });
                 }
-    
-                // Add line numbers
-                const editor = document.getElementById('editor');
-                const lineNumbers = document.getElementById('lineNumbers');
-                const lines = editor.textContent.split('\\n');
-                lines.forEach((_, i) => {
-                    const span = document.createElement('span');
-                    span.className = 'line-number';
-                    span.textContent = (i + 1).toString();
-                    lineNumbers.appendChild(span);
-                });
-    
-                // Synchronize scrolling between line numbers and content
-                editor.addEventListener('scroll', () => {
-                    lineNumbers.scrollTop = editor.scrollTop;
-                });
             </script>
         </body>
         </html>`;
