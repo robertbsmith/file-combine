@@ -34,6 +34,31 @@
     "configuration": {
       "title": "File Combine",
       "properties": {
+        "fileCombine.llmInstructions": {
+          "type": "string",
+          "default": "This document contains a collection of files from a software project. The content is organized with a processing summary, file structure, and the combined contents of each file, each in its own section.",
+          "description": "Custom instructions to describe the context of the combined files for an LLM."
+        },
+        "fileCombine.showProcessingSummary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the main summary block (file counts, total size, estimated tokens)."
+        },
+        "fileCombine.showIgnoredFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the list of files that were ignored by .gitignore or .filecombine rules."
+        },
+        "fileCombine.showTimings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the timings for each stage of the file combination process."
+        },
+        "fileCombine.showFileStructure": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the ASCII tree view of the processed file structure."
+        },
         "fileCombine.excludePatterns": {
           "type": "array",
           "items": {
@@ -58,9 +83,10 @@
             "*.log",
             "coverage/**",
             ".idea/**",
-            ".vscode/**"
+            ".vscode/**",
+            ".uvlock"
           ],
-          "description": "Patterns to exclude from file combination"
+          "description": "Patterns for files and folders to always exclude from file combination."
         }
       }
     }
