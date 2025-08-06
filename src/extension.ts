@@ -264,6 +264,7 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
             }
         }
     }
+    // Reverse the list so the most specific ignore files are checked first (deepest path to shallowest)
     allRelevantIgnoreFiles.reverse();
 
     await vscode.window.withProgress({
@@ -421,6 +422,7 @@ async function collectFiles(
         const stats = await vscode.workspace.fs.stat(uri);
         const relativePath = vscode.workspace.asRelativePath(uri);
 
+        // First, check against global exclusion settings.
         if (shouldExcludeFile(relativePath)) {
             if (!summary.excludedFiles.includes(relativePath)) {
                 summary.excludedFiles.push(relativePath);
@@ -428,19 +430,29 @@ async function collectFiles(
             return;
         }
 
-        for (const ignoreEntry of [...allRelevantIgnoreFiles].reverse()) {
+        // --- FIX STARTS HERE ---
+        // Second, check against hierarchical .gitignore and .filecombine rules.
+        // The 'allRelevantIgnoreFiles' list is already reversed to check from deepest to shallowest.
+        // We do NOT reverse it again here.
+        for (const ignoreEntry of allRelevantIgnoreFiles) {
             const tempIgnore = ignore().add(ignoreEntry.patterns);
+            
+            // The path must be relative to the directory containing the ignore file.
             const relativeToIgnoreFile = path.relative(path.dirname(ignoreEntry.filePath), uri.fsPath);
+            
+            // The 'ignore' library requires POSIX-style paths (with /).
             const posixPath = relativeToIgnoreFile.split(path.sep).join(path.posix.sep);
 
-            if (tempIgnore.ignores(posixPath)) {
+            if (posixPath && tempIgnore.ignores(posixPath)) {
                 if (!summary.ignoredFiles.some(f => f.path === relativePath)) {
                     summary.ignoredFiles.push({ path: relativePath, reason: ignoreEntry.filePath });
                 }
-                return;
+                return; // File is ignored, so we stop processing it.
             }
         }
+        // --- FIX ENDS HERE ---
 
+        // If not ignored, process the file or directory.
         if (stats.type === vscode.FileType.File) {
             if (processedFilePaths.has(uri.fsPath)) return;
             fileUris.push(uri);
@@ -449,6 +461,7 @@ async function collectFiles(
             const dirContent = await vscode.workspace.fs.readDirectory(uri);
             for (const [name] of dirContent) {
                 const childUri = vscode.Uri.joinPath(uri, name);
+                // Pass the correctly ordered ignore list to the recursive call.
                 await collectFiles(childUri, fileUris, summary, processedFilePaths, token, Date.now(), allRelevantIgnoreFiles);
             }
         }
@@ -482,6 +495,7 @@ async function getAllRelevantIgnoreFiles(startUri: vscode.Uri): Promise<IgnoreFi
                 continue;
             }
             try {
+                // Using fs.existsSync because vscode.workspace.fs.stat throws an error for non-existence.
                 if (fs.existsSync(ignoreFileUri.fsPath)) {
                     const contentBytes = await vscode.workspace.fs.readFile(ignoreFileUri);
                     const patterns = contentBytes.toString().split('\n').filter(p => p.trim() !== '' && !p.startsWith('#'));
@@ -495,7 +509,7 @@ async function getAllRelevantIgnoreFiles(startUri: vscode.Uri): Promise<IgnoreFi
         }
         if (currentUri.path === workspaceRoot.path) break;
         const parentPath = path.dirname(currentUri.fsPath);
-        if (parentPath === currentUri.fsPath) break;
+        if (parentPath === currentUri.fsPath) break; // Reached the top
         currentUri = vscode.Uri.file(parentPath);
     }
     return relevantIgnoreFiles;
