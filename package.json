@@ -2,7 +2,7 @@
   "name": "file-combine",
   "displayName": "file-combine",
   "description": "Select and combine files and folders to merge into a single editor window, that can be copied into tools such as ChatGPT",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "repository": {
     "type": "git",
     "url": "https://github.com/robertbsmith/file-combine"

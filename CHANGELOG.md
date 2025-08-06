@@ -4,7 +4,11 @@ All notable changes to the "file-combine" extension will be documented in this f
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.0.6]
+## [0.0.8]
+- Added support for user settings configurations
+- Added .filecombine ignore support
+
+## [0.0.7]
 - Fixed character encoding issue in webview
 
 ## [0.0.6]
