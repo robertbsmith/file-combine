@@ -2,6 +2,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import ignore from 'ignore';
+import { isText } from 'istextorbinary';
 import { ProcessingSummary, IgnoreFileEntry } from './types';
 import { createTreeStructure, generateTreeView } from './treeView';
 import { CombinedFilesPanel } from './webviewPanel';
@@ -9,6 +10,7 @@ import { debugLog, formatFileSize } from './utils';
 
 export const ignoreFileCache = new Map<string, IgnoreFileEntry>();
 
+type CompiledIgnoreMap = Map<string, ignore.Ignore>;
 
 const DEFAULT_EXCLUDE_PATTERNS = [
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'dist/**', 'build/**', 'node_modules/**',
@@ -40,26 +42,52 @@ export async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri)
     const excludePatterns = config.get<string[]>('excludePatterns', DEFAULT_EXCLUDE_PATTERNS);
     const globalExcluder = ignore().add(excludePatterns);
 
+    // --- REFACTORED IGNORE LOGIC ---
     const allRelevantIgnoreFiles: IgnoreFileEntry[] = [];
+    const uniqueStartDirs = new Set<string>();
+
     for (const uri of uris) {
-        const collected = await getAllRelevantIgnoreFiles(uri);
+        try {
+            const stats = await vscode.workspace.fs.stat(uri);
+            const startDir = stats.type === vscode.FileType.Directory ? uri.fsPath : path.dirname(uri.fsPath);
+            uniqueStartDirs.add(startDir);
+        } catch (e) {
+            debugLog(`Could not stat URI ${uri.fsPath} for ignore file collection`, e);
+        }
+    }
+    
+    const foundIgnoreFiles = new Set<string>();
+    for (const dir of uniqueStartDirs) {
+        const collected = await getAllRelevantIgnoreFiles(vscode.Uri.file(dir));
         for (const entry of collected) {
-            if (!allRelevantIgnoreFiles.some(e => e.filePath === entry.filePath)) {
+            if (!foundIgnoreFiles.has(entry.filePath)) {
                 allRelevantIgnoreFiles.push(entry);
+                foundIgnoreFiles.add(entry.filePath);
             }
         }
     }
+    
+    const compiledIgnores: CompiledIgnoreMap = new Map();
+    for (const entry of allRelevantIgnoreFiles) {
+        const dirPath = path.dirname(entry.filePath);
+        if (!compiledIgnores.has(dirPath)) {
+            compiledIgnores.set(dirPath, ignore());
+        }
+        compiledIgnores.get(dirPath)!.add(entry.patterns);
+    }
+    // --- END REFACTORED IGNORE LOGIC ---
 
     await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification, title: 'Combining Files', cancellable: true
     }, async (progress, token) => {
         const startTime = Date.now();
         const fileUris: vscode.Uri[] = [];
-        summary.timings.collectFiles = 0;
-        for (const uri of uris) {
-            const collectStartTime = Date.now();
-            await collectFiles(uri, fileUris, summary, processedFilePaths, token, collectStartTime, allRelevantIgnoreFiles, globalExcluder);
-        }
+        
+        const collectStartTime = Date.now();
+        await Promise.all(uris.map(uri => 
+            collectFiles(uri, fileUris, summary, processedFilePaths, token, compiledIgnores, globalExcluder)
+        ));
+        summary.timings.collectFiles = Date.now() - collectStartTime;
         summary.totalFiles = fileUris.length;
 
         const processStartTime = Date.now();
@@ -113,7 +141,8 @@ export async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri)
             const groupedIgnores = new Map<string, string[]>();
             if (summary.ignoredFiles.length > 0) {
                 for (const ignored of summary.ignoredFiles) {
-                    const reasonKey = `Files ignored by ${path.basename(ignored.reason)}`;
+                    const relativeReasonPath = vscode.workspace.asRelativePath(ignored.reason);
+                    const reasonKey = `Files ignored by rules in ./${relativeReasonPath}`;
                     if (!groupedIgnores.has(reasonKey)) {
                         groupedIgnores.set(reasonKey, []);
                     }
@@ -163,7 +192,8 @@ function printProcessingSummary(summary: ProcessingSummary) {
         console.log('Files ignored by project rules:');
         const groupedIgnores = new Map<string, string[]>();
         for (const ignored of summary.ignoredFiles) {
-            const reasonKey = `From ${path.basename(ignored.reason)}`;
+            const relativeReasonPath = vscode.workspace.asRelativePath(ignored.reason);
+            const reasonKey = `By rules in ./${relativeReasonPath}`;
             if (!groupedIgnores.has(reasonKey)) {
                 groupedIgnores.set(reasonKey, []);
             }
@@ -195,8 +225,7 @@ async function collectFiles(
     summary: ProcessingSummary,
     processedFilePaths: Set<string>,
     token: vscode.CancellationToken,
-    collectStartTime: number,
-    allRelevantIgnoreFiles: IgnoreFileEntry[],
+    compiledIgnores: CompiledIgnoreMap,
     globalExcluder: ignore.Ignore
 ) {
     if (token.isCancellationRequested){ return; }
@@ -212,22 +241,30 @@ async function collectFiles(
             return;
         }
 
-        const applicableIgnoreFiles = allRelevantIgnoreFiles.filter(entry =>
-            uri.fsPath.startsWith(path.dirname(entry.filePath))
-        );
-        
-        for (const ignoreEntry of applicableIgnoreFiles) {
-            const tempIgnore = ignore().add(ignoreEntry.patterns);
-            const relativeToIgnoreFile = path.relative(path.dirname(ignoreEntry.filePath), uri.fsPath);
-            const posixPath = relativeToIgnoreFile.split(path.sep).join(path.posix.sep);
+        // --- OPTIMIZED IGNORE CHECKING ---
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+        const workspaceRootPath = workspaceFolder?.uri.fsPath;
+        let currentDir = (stats.type === vscode.FileType.Directory) ? uri.fsPath : path.dirname(uri.fsPath);
 
-            if (posixPath && tempIgnore.ignores(posixPath)) {
-                if (!summary.ignoredFiles.some(f => f.path === relativePath)) {
-                    summary.ignoredFiles.push({ path: relativePath, reason: ignoreEntry.filePath });
+        while (workspaceRootPath && currentDir.startsWith(workspaceRootPath)) {
+            if (compiledIgnores.has(currentDir)) {
+                const ig = compiledIgnores.get(currentDir)!;
+                const pathToCheck = path.relative(currentDir, uri.fsPath);
+                const posixPath = pathToCheck.split(path.sep).join(path.posix.sep);
+
+                if (posixPath && ig.ignores(posixPath)) {
+                    if (!summary.ignoredFiles.some(f => f.path === relativePath)) {
+                        summary.ignoredFiles.push({ path: relativePath, reason: currentDir });
+                    }
+                    return;
                 }
-                return;
             }
+            if (currentDir === workspaceRootPath) break;
+            const parentDir = path.dirname(currentDir);
+            if (parentDir === currentDir) break;
+            currentDir = parentDir;
         }
+        // --- END OPTIMIZED IGNORE CHECKING ---
 
         if (stats.type === vscode.FileType.File) {
             if (processedFilePaths.has(uri.fsPath)) { return; }
@@ -235,16 +272,13 @@ async function collectFiles(
             processedFilePaths.add(uri.fsPath);
         } else if (stats.type === vscode.FileType.Directory) {
             const dirContent = await vscode.workspace.fs.readDirectory(uri);
-            for (const [name] of dirContent) {
+            await Promise.all(dirContent.map(([name]) => {
                 const childUri = vscode.Uri.joinPath(uri, name);
-                await collectFiles(childUri, fileUris, summary, processedFilePaths, token, Date.now(), allRelevantIgnoreFiles, globalExcluder);
-            }
+                return collectFiles(childUri, fileUris, summary, processedFilePaths, token, compiledIgnores, globalExcluder);
+            }));
         }
     } catch (error) {
         debugLog(`Error processing ${uri.fsPath} in collectFiles:`, error);
-    } finally {
-        const duration = Date.now() - collectStartTime;
-        summary.timings.collectFiles += duration;
     }
 }
 
@@ -296,7 +330,6 @@ async function processFile(uri: vscode.Uri, summary: ProcessingSummary): Promise
         const buffer = Buffer.from(contentBytes);
         const fileSize = buffer.length;
 
-        const { isText } = await import('istextorbinary');
         if (!isText(path.basename(uri.fsPath), buffer)) {
             summary.binaryFiles.push(vscode.workspace.asRelativePath(uri));
             return null;
