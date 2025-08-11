@@ -2,11 +2,16 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import ignore from 'ignore';
-import { isText } from 'istextorbinary';
+// REMOVED: import { isText } from 'istextorbinary';
 import { ProcessingSummary, IgnoreFileEntry } from './types';
 import { createTreeStructure, generateTreeView } from './treeView';
 import { CombinedFilesPanel } from './webviewPanel';
 import { debugLog, formatFileSize } from './utils';
+
+// ADDED: Lazily import the isText function from the ESM-only 'istextorbinary' package.
+// This creates a top-level promise that resolves to the `isText` function itself.
+// We will await this promise inside processFile, ensuring the module is only loaded once.
+const isTextPromise = import('istextorbinary').then(module => module.isText);
 
 export const ignoreFileCache = new Map<string, IgnoreFileEntry>();
 
@@ -259,9 +264,9 @@ async function collectFiles(
                     return;
                 }
             }
-            if (currentDir === workspaceRootPath) break;
+            if (currentDir === workspaceRootPath) {break;}
             const parentDir = path.dirname(currentDir);
-            if (parentDir === currentDir) break;
+            if (parentDir === currentDir) {break;}
             currentDir = parentDir;
         }
         // --- END OPTIMIZED IGNORE CHECKING ---
@@ -326,6 +331,10 @@ async function getAllRelevantIgnoreFiles(startUri: vscode.Uri): Promise<IgnoreFi
 
 async function processFile(uri: vscode.Uri, summary: ProcessingSummary): Promise<{ content: string; path: string; size: number; tokens: number } | null> {
     try {
+        // ADDED: Get the isText function by awaiting our promise. On the first call, this will
+        // wait for the import; on subsequent calls, it resolves instantly.
+        const isText = await isTextPromise;
+
         const contentBytes = await vscode.workspace.fs.readFile(uri);
         const buffer = Buffer.from(contentBytes);
         const fileSize = buffer.length;
