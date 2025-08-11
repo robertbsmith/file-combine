@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import ignore from 'ignore';
-import * as fs from 'fs';
 
 // Enhanced Debug logger with timestamps
 function debugLog(message: string, ...args: any[]) {
@@ -104,11 +103,8 @@ function generateTreeView(node: TreeNode, prefix: string = '', isLast = true): s
     return result;
 }
 
-function shouldExcludeFile(relativePath: string): boolean {
-    const config = vscode.workspace.getConfiguration('fileCombine');
-    const excludePatterns = config.get<string[]>('excludePatterns', DEFAULT_EXCLUDE_PATTERNS);
-    const customIgnore = ignore().add(excludePatterns);
-    return customIgnore.ignores(relativePath);
+function shouldExcludeFile(relativePath: string, globalExcluder: ignore.Ignore): boolean {
+    return globalExcluder.ignores(relativePath);
 }
 
 class CombinedFilesPanel {
@@ -255,6 +251,10 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
     const processedFilePaths = new Set<string>();
     ignoreFileCache.clear();
 
+    const config = vscode.workspace.getConfiguration('fileCombine');
+    const excludePatterns = config.get<string[]>('excludePatterns', DEFAULT_EXCLUDE_PATTERNS);
+    const globalExcluder = ignore().add(excludePatterns);
+
     const allRelevantIgnoreFiles: IgnoreFileEntry[] = [];
     for (const uri of uris) {
         const collected = await getAllRelevantIgnoreFiles(uri);
@@ -264,8 +264,8 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
             }
         }
     }
-    // Reverse the list so the most specific ignore files are checked first (deepest path to shallowest)
-    allRelevantIgnoreFiles.reverse();
+    // DO NOT REVERSE. The `getAllRelevantIgnoreFiles` function returns ignore files from deepest
+    // to shallowest, which is the correct order for precedence checks.
 
     await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification, title: 'Combining Files', cancellable: true
@@ -275,7 +275,7 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
         summary.timings.collectFiles = 0;
         for (const uri of uris) {
             const collectStartTime = Date.now();
-            await collectFiles(uri, fileUris, summary, processedFilePaths, token, collectStartTime, allRelevantIgnoreFiles);
+            await collectFiles(uri, fileUris, summary, processedFilePaths, token, collectStartTime, allRelevantIgnoreFiles, globalExcluder);
         }
         summary.totalFiles = fileUris.length;
 
@@ -309,7 +309,6 @@ async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri) {
         summary.timings.treeGeneration = Date.now() - treeStartTime;
         summary.timings.total = Date.now() - startTime;
 
-        const config = vscode.workspace.getConfiguration('fileCombine');
         let output = '';
 
         if (config.get<boolean>('showProcessingSummary', false)) {
@@ -414,7 +413,8 @@ async function collectFiles(
     processedFilePaths: Set<string>,
     token: vscode.CancellationToken,
     collectStartTime: number,
-    allRelevantIgnoreFiles: IgnoreFileEntry[]
+    allRelevantIgnoreFiles: IgnoreFileEntry[],
+    globalExcluder: ignore.Ignore
 ) {
     if (token.isCancellationRequested) return;
 
@@ -423,7 +423,7 @@ async function collectFiles(
         const relativePath = vscode.workspace.asRelativePath(uri);
 
         // First, check against global exclusion settings.
-        if (shouldExcludeFile(relativePath)) {
+        if (shouldExcludeFile(relativePath, globalExcluder)) {
             if (!summary.excludedFiles.includes(relativePath)) {
                 summary.excludedFiles.push(relativePath);
             }
@@ -432,9 +432,13 @@ async function collectFiles(
 
         // --- FIX STARTS HERE ---
         // Second, check against hierarchical .gitignore and .filecombine rules.
-        // The 'allRelevantIgnoreFiles' list is already reversed to check from deepest to shallowest.
-        // We do NOT reverse it again here.
-        for (const ignoreEntry of allRelevantIgnoreFiles) {
+        // Filter the master list to only include ignore files relevant to the current file's path.
+        const applicableIgnoreFiles = allRelevantIgnoreFiles.filter(entry =>
+            uri.fsPath.startsWith(path.dirname(entry.filePath))
+        );
+        
+        // The ignore files are already ordered from deepest to shallowest for correct precedence.
+        for (const ignoreEntry of applicableIgnoreFiles) {
             const tempIgnore = ignore().add(ignoreEntry.patterns);
             
             // The path must be relative to the directory containing the ignore file.
@@ -461,8 +465,7 @@ async function collectFiles(
             const dirContent = await vscode.workspace.fs.readDirectory(uri);
             for (const [name] of dirContent) {
                 const childUri = vscode.Uri.joinPath(uri, name);
-                // Pass the correctly ordered ignore list to the recursive call.
-                await collectFiles(childUri, fileUris, summary, processedFilePaths, token, Date.now(), allRelevantIgnoreFiles);
+                await collectFiles(childUri, fileUris, summary, processedFilePaths, token, Date.now(), allRelevantIgnoreFiles, globalExcluder);
             }
         }
     } catch (error) {
@@ -495,16 +498,20 @@ async function getAllRelevantIgnoreFiles(startUri: vscode.Uri): Promise<IgnoreFi
                 continue;
             }
             try {
-                // Using fs.existsSync because vscode.workspace.fs.stat throws an error for non-existence.
-                if (fs.existsSync(ignoreFileUri.fsPath)) {
-                    const contentBytes = await vscode.workspace.fs.readFile(ignoreFileUri);
-                    const patterns = contentBytes.toString().split('\n').filter(p => p.trim() !== '' && !p.startsWith('#'));
-                    const entry: IgnoreFileEntry = { filePath: ignoreFileUri.fsPath, patterns };
-                    ignoreFileCache.set(ignoreFileUri.fsPath, entry);
-                    relevantIgnoreFiles.push(entry);
-                }
+                // Use vscode.workspace.fs.stat to check for existence in a platform-agnostic way.
+                await vscode.workspace.fs.stat(ignoreFileUri);
+                
+                // If stat doesn't throw, the file exists.
+                const contentBytes = await vscode.workspace.fs.readFile(ignoreFileUri);
+                const patterns = contentBytes.toString().split('\n').filter(p => p.trim() !== '' && !p.startsWith('#'));
+                const entry: IgnoreFileEntry = { filePath: ignoreFileUri.fsPath, patterns };
+                ignoreFileCache.set(ignoreFileUri.fsPath, entry);
+                relevantIgnoreFiles.push(entry);
             } catch (error) {
-                debugLog(`Error reading ${ignoreFileName} at ${ignoreFileUri.fsPath}:`, error);
+                // A 'FileNotFound' error is expected and should be ignored. Log other errors.
+                if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) {
+                    debugLog(`Error reading ${ignoreFileName} at ${ignoreFileUri.fsPath}:`, error);
+                }
             }
         }
         if (currentUri.path === workspaceRoot.path) break;

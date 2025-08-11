@@ -37,9 +37,9 @@ This extension is highly configurable. You can change these settings in the VS C
 | Setting | Description | Default |
 | :--- | :--- | :--- |
 | `fileCombine.llmInstructions` | A preamble to add to the output. Use this to provide context or specific instructions to the LLM. | `"This document contains a collection of files from a software project..."` |
-| `fileCombine.showProcessingSummary` | Show the main summary block, including file counts, total size, and the estimated token count. | `false` |
+| `fileCombine.showProcessingSummary` | Show the main summary block, including file counts, total size, and the estimated token count. | `true` |
 | `fileCombine.showIgnoredFiles` | Show the lists of files that were ignored by `.gitignore`, `.filecombine`, or global settings. | `true` |
-| `fileCombine.showTimings` | Show a breakdown of how long each stage of the combination process took. | `true` |
+| `fileCombine.showTimings` | Show a breakdown of how long each stage of the combination process took. | `false` |
 | `fileCombine.showFileStructure` | Show the ASCII tree view of the processed file structure. | `true` |
 | `fileCombine.excludePatterns` | An array of glob patterns for files and folders to *always* exclude, regardless of ignore files (e.g., `node_modules/**`). | `[...]` |
 
