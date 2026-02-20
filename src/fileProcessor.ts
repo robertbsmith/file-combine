@@ -20,7 +20,7 @@ type CompiledIgnoreMap = Map<string, ignore.Ignore>;
 const DEFAULT_EXCLUDE_PATTERNS = [
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'dist/**', 'build/**', 'node_modules/**',
     '*.min.js', '*.bundle.js', 'tsconfig.tsbuildinfo', '.next/**', '*.svg', '*.jpg', '*.png', '*.ico',
-    '.env*', '*.log', 'coverage/**', '.idea/**', '.vscode/**'
+    '.env*', '*.log', 'coverage/**', '.idea/**', '.vscode/**', "uv.lock"
 ];
 
 function shouldExcludeFile(relativePath: string, globalExcluder: ignore.Ignore): boolean {
@@ -181,7 +181,13 @@ export async function combineFiles(uris: vscode.Uri[], extensionUri: vscode.Uri)
         }
 
         output += '# Combined Files\n\n' + combinedContent;
-        CombinedFilesPanel.createOrShow(extensionUri, output);
+
+        if (config.get<boolean>('openInEditor', false)) {
+            const doc = await vscode.workspace.openTextDocument({ content: output, language: 'markdown' });
+            await vscode.window.showTextDocument(doc);
+        } else {
+            CombinedFilesPanel.createOrShow(extensionUri, output);
+        }
         printProcessingSummary(summary);
     });
 }

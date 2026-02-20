@@ -2,7 +2,7 @@
   "name": "file-combine",
   "displayName": "file-combine",
   "description": "Select and combine files and folders to merge into a single editor window, that can be copied into tools such as ChatGPT",
-  "version": "0.0.9",
+  "version": "0.0.11",
   "repository": {
     "type": "git",
     "url": "https://github.com/robertbsmith/file-combine"
@@ -58,6 +58,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show the ASCII tree view of the processed file structure."
+        },
+        "fileCombine.openInEditor": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open combined files in a regular editor tab instead of the webview. This allows saving with Ctrl+S and copying with Ctrl+A."
         },
         "fileCombine.excludePatterns": {
           "type": "array",
